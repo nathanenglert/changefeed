@@ -1,0 +1,66 @@
+# §8.3 api-docs rule pack — shipped, embedded via include_str!. Layered on `default` (last-wins).
+id = "api-docs"
+extends = "default"
+schema = 1
+
+[bands]
+critical = 0.90
+high = 0.70
+medium = 0.40
+low = 0.15
+
+[signals]
+type = 1.0
+mag = 1.0
+num = 1.0
+date = 1.0
+neg = 1.0
+pos = 1.0
+kw = 1.0
+
+# §8.3 keyword/regex rules. A breaking-change phrase forces `api_breaking` and opens a ticket; a
+# deprecation phrase forces `api_deprecation`. Both are sticky so they bypass score banding.
+[[rule]]
+id = "api.breaking"
+match = "(?i)\\b(breaking change|no longer supported|removed|now errors?|will error|max(imum)? (allowed )?(is|of|per_page))\\b"
+weight = 1.0
+action = "open_ticket"
+sticky = true
+cat = "api_breaking"
+
+[[rule]]
+id = "api.deprecation"
+match = "(?i)\\b(deprecated|deprecation|sunset|end[- ]of[- ]life)\\b"
+weight = 1.0
+action = "open_ticket"
+sticky = true
+cat = "api_deprecation"
+
+[[rule]]
+id = "api.version"
+match = "(?i)\\bv\\d+(\\.\\d+)*\\b|\\bversion\\b"
+weight = 1.0
+
+# §8.3 category routing rows.
+[[rule]]
+cat = "api_breaking"
+mat = "critical"
+act = "open_ticket"
+
+[[rule]]
+cat = "api_deprecation"
+mat = "high"
+act = "open_ticket"
+
+[[rule]]
+cat = "api_addition"
+mat = "medium"
+act = "notify"
+
+[[rule]]
+cat = "version_bump"
+mat = "medium"
+act = "refetch_linked"
+
+[salience_hints]
+keywords = ["deprecated", "breaking", "removed", "endpoint", "rate limit", "version", "sunset"]

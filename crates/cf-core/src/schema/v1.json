@@ -1,0 +1,190 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://changefeed.dev/schema/v1.json",
+  "title": "changefeed event v1",
+  "type": "object",
+  "required": [
+    "v",
+    "id",
+    "src",
+    "obs",
+    "base",
+    "seg",
+    "ct",
+    "delta",
+    "why",
+    "followup",
+    "conf",
+    "prov"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "v": { "const": "1" },
+    "id": { "type": "string", "pattern": "^cfe_" },
+    "src": { "$ref": "#/$defs/src" },
+    "obs": { "type": "string" },
+    "base": { "$ref": "#/$defs/base" },
+    "seg": { "$ref": "#/$defs/seg" },
+    "ct": { "$ref": "#/$defs/ct" },
+    "delta": { "$ref": "#/$defs/delta" },
+    "why": { "$ref": "#/$defs/why" },
+    "followup": { "$ref": "#/$defs/followup" },
+    "conf": { "type": "number", "minimum": 0, "maximum": 1 },
+    "prov": { "$ref": "#/$defs/prov" }
+  },
+  "$defs": {
+    "src": {
+      "type": "object",
+      "required": ["url", "tid"],
+      "additionalProperties": false,
+      "properties": {
+        "url": { "type": "string" },
+        "tid": { "type": "string" },
+        "title": { "type": "string" }
+      }
+    },
+    "base": {
+      "type": "object",
+      "required": ["obs", "snap", "rev"],
+      "additionalProperties": false,
+      "properties": {
+        "obs": { "type": "string" },
+        "snap": { "type": "string" },
+        "rev": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "seg": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["anchor", "fp", "label_path", "role"],
+        "additionalProperties": false,
+        "properties": {
+          "anchor": { "type": "string" },
+          "fp": { "type": "string" },
+          "label_path": { "type": "string" },
+          "role": { "type": "string" }
+        }
+      }
+    },
+    "ct": {
+      "enum": ["added", "removed", "modified", "reordered", "restyled"]
+    },
+    "delta": {
+      "type": "object",
+      "required": ["enc"],
+      "oneOf": [
+        {
+          "properties": {
+            "enc": { "const": "val" },
+            "a": { "type": "string" },
+            "b": { "type": "string" }
+          },
+          "required": ["enc", "a", "b"],
+          "additionalProperties": false
+        },
+        {
+          "properties": {
+            "enc": { "const": "idiff" },
+            "ops": {
+              "type": "array",
+              "items": {
+                "type": "array",
+                "prefixItems": [
+                  { "enum": ["=", "-", "+"] },
+                  { "type": "string" }
+                ],
+                "items": false,
+                "minItems": 2,
+                "maxItems": 2
+              }
+            }
+          },
+          "required": ["enc", "ops"],
+          "additionalProperties": false
+        },
+        {
+          "properties": {
+            "enc": { "const": "block" },
+            "a": { "type": "string" },
+            "b": { "type": "string" },
+            "atrunc": { "type": "boolean" }
+          },
+          "required": ["enc", "a", "atrunc"],
+          "additionalProperties": false
+        },
+        {
+          "properties": {
+            "enc": { "const": "move" },
+            "from": { "type": "integer", "minimum": 0 },
+            "to": { "type": "integer", "minimum": 0 },
+            "key": { "type": "string" }
+          },
+          "required": ["enc", "from", "to", "key"],
+          "additionalProperties": false
+        },
+        {
+          "properties": {
+            "enc": { "const": "struct" },
+            "added": { "type": "integer", "minimum": 0 },
+            "removed": { "type": "integer", "minimum": 0 },
+            "modified": { "type": "integer", "minimum": 0 },
+            "sample": { "type": "array", "items": { "$ref": "#/$defs/delta" } },
+            "truncated": { "type": "integer", "minimum": 0 }
+          },
+          "required": ["enc", "added", "removed", "modified", "sample", "truncated"],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "why": {
+      "type": "object",
+      "required": ["sal", "mat", "cat", "summary"],
+      "additionalProperties": false,
+      "properties": {
+        "sal": { "type": "number", "minimum": 0, "maximum": 1 },
+        "mat": { "$ref": "#/$defs/materiality" },
+        "cat": { "type": "string" },
+        "summary": { "type": "string", "maxLength": 160 }
+      }
+    },
+    "materiality": {
+      "enum": ["none", "low", "medium", "high", "critical"]
+    },
+    "followup": {
+      "type": "object",
+      "required": ["act"],
+      "additionalProperties": false,
+      "properties": {
+        "act": {
+          "enum": [
+            "ignore",
+            "notify",
+            "refetch_linked",
+            "reembed_kb",
+            "re_run_downstream",
+            "open_ticket",
+            "escalate_human",
+            "page_oncall"
+          ]
+        },
+        "tgt": { "type": "string" },
+        "params": { "type": "object" },
+        "q": { "type": "string" }
+      }
+    },
+    "prov": {
+      "type": "object",
+      "required": ["m", "hash", "status"],
+      "additionalProperties": false,
+      "properties": {
+        "m": { "enum": ["http", "headless", "api", "rss"] },
+        "hash": { "type": "string" },
+        "etag": { "type": "string" },
+        "status": { "type": "integer" },
+        "ms": { "type": "integer", "minimum": 0 },
+        "pack": { "type": "string" }
+      }
+    }
+  }
+}

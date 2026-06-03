@@ -1,0 +1,38 @@
+[package]
+name = "cf-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "changefeed core pipeline — PURE: no reqwest/tokio/rusqlite/rand/clock. The purity wall."
+
+# PURITY WALL (ARCHITECTURE.md §4): this crate declares NO reqwest/tokio/rusqlite/zstd/rand
+# dependency, and uses `time` only for civil-date parsing (NO clock). Reading a clock, opening a
+# socket, or touching disk in a pure stage is a BUILD ERROR, not a review note.
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+scraper = "0.20"
+html5ever = "0.27"
+blake3 = "1.5"
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+unicode-normalization = "0.1"
+regex = "1.10"
+rust_decimal = "1"
+url = "2.5"
+rustc-hash = "2.0"
+time = { version = "0.3", features = ["formatting", "parsing", "macros"] }
+similar = "2"
+smallvec = "1.13"
+thiserror = "2"
+
+[dev-dependencies]
+insta = "1"
+proptest = "1"
+jsonschema = "0"
+criterion = "0.5"
+
+[[bench]]
+name = "pipeline_bench"
+harness = false

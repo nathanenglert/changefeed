@@ -1,0 +1,69 @@
+# §8.3 status-page rule pack — shipped, embedded via include_str!. Layered on `default` (last-wins).
+id = "status-page"
+extends = "default"
+schema = 1
+
+[bands]
+critical = 0.90
+high = 0.70
+medium = 0.40
+low = 0.15
+
+[signals]
+type = 1.0
+mag = 1.0
+num = 1.0
+date = 1.0
+neg = 1.0
+pos = 1.0
+kw = 1.0
+
+# §8.3 keyword/regex rules. `incident.open` is sticky → always page on-call regardless of banding.
+[[rule]]
+id = "incident.open"
+match = "(?i)\\b(degraded|partial outage|major outage|investigating)\\b"
+weight = 1.0
+action = "page_oncall"
+sticky = true
+cat = "incident_open"
+
+[[rule]]
+id = "incident.resolved"
+match = "(?i)\\b(resolved|operational|back to normal|all systems)\\b"
+weight = 1.0
+cat = "incident_resolved"
+
+[[rule]]
+id = "incident.update"
+match = "(?i)\\b(monitoring|identified|update)\\b"
+weight = 1.0
+cat = "incident_update"
+
+# §8.3 category routing rows.
+[[rule]]
+cat = "incident_open"
+mat = "critical"
+act = "page_oncall"
+
+[[rule]]
+cat = "incident_update"
+mat = "high"
+act = "notify"
+
+[[rule]]
+cat = "incident_resolved"
+mat = "medium"
+act = "notify"
+
+[[rule]]
+cat = "availability_out"
+mat = "critical"
+act = "page_oncall"
+
+[[rule]]
+cat = "availability_in"
+mat = "medium"
+act = "notify"
+
+[salience_hints]
+keywords = ["incident", "outage", "degraded", "operational", "resolved", "investigating", "down"]

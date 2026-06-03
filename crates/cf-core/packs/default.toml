@@ -1,0 +1,56 @@
+# §8.3 default rule pack — the fallback layer (last-wins layering base), embedded via include_str!.
+# Pure data, no code. Archetypes (`pricing`/`api-docs`/`status-page`) layer on top of this.
+id = "default"
+schema = 1
+
+# §6.4 default materiality band cutoffs (inclusive lower bounds). Pack-overridable.
+[bands]
+critical = 0.90
+high = 0.70
+medium = 0.40
+low = 0.15
+
+# §8.1 block-type weight table (`w_type`). Pack-overridable; a missing type falls back to the
+# scorer's built-in §8.1 default.
+[block_type_weight]
+price = 1.00
+date = 0.85
+number = 0.85
+heading = 0.80
+table_row = 0.75
+code = 0.70
+list_item = 0.55
+link = 0.50
+paragraph = 0.45
+text = 0.20
+
+# §8.4 band → default action map (overridable per pack).
+[band_action]
+none = "ignore"
+low = "notify"
+medium = "notify"
+high = "re_run_downstream"
+critical = "escalate_human"
+
+[signals]
+type = 1.0
+mag = 1.0
+num = 1.0
+date = 1.0
+neg = 1.0
+pos = 1.0
+kw = 1.0
+
+# §8.3 category routing rows (cat → band + action). No regex rules in the base layer.
+[[rule]]
+cat = "content_edit"
+mat = "low"
+act = "notify"
+
+[[rule]]
+cat = "cosmetic"
+mat = "none"
+act = "ignore"
+
+[salience_hints]
+keywords = []

@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Pricing — Competitor</title>
+  <!-- volatile: DIFFERENT rotating CSRF nonce than before (must be stripped by §5.3) -->
+  <meta name="csrf-token" content="f0e1d2c3b4a5968778695a4b3c2d1e0f">
+</head>
+<body>
+  <main>
+    <section class="PricingTable" data-csrf-nonce="f0e1d2c3b4a5968778695a4b3c2d1e0f">
+      <h1>Pricing</h1>
+      <!-- volatile: DIFFERENT live viewer count than before (must be stripped by §5.3) -->
+      <p class="live-counter">127 viewing right now</p>
+
+      <div class="plan" data-plan="starter">
+        <h2>Starter Plan</h2>
+        <p class="price">$19/mo</p>
+        <ul>
+          <li>1 project</li>
+          <li>Community support</li>
+        </ul>
+      </div>
+
+      <div class="plan" data-plan="pro">
+        <h2>Pro Plan</h2>
+        <!-- SEMANTIC CHANGE: Pro plan price rose $49 -> $59 -->
+        <p class="price">$59/mo</p>
+        <ul>
+          <li>Unlimited projects</li>
+          <li>Priority support</li>
+        </ul>
+      </div>
+
+      <div class="plan" data-plan="enterprise">
+        <h2>Enterprise Plan</h2>
+        <p class="price">Contact us</p>
+        <ul>
+          <li>SSO &amp; SAML</li>
+          <li>Dedicated support</li>
+        </ul>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

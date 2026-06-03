@@ -1,0 +1,65 @@
+# §8.3 pricing rule pack — shipped, embedded via include_str!. Layered on `default` (last-wins).
+# First-match-wins rules (§4 determinism rule 5). Tuned in the §10 worked example.
+id = "pricing"
+extends = "default"
+schema = 1
+
+# NOTE: the §8.3 illustrative snippet shows twitchy overrides (high=0.55, critical=0.80). The
+# authoritative §10 worked example pins a price change at sal≈0.86 → `mat:high`, which requires
+# critical>0.86. We therefore keep the DEFAULT band cutoffs here so 0.86 bands to `high`, not
+# `critical` (the §6.4 default table). A twitchier per-target pack may still override these.
+[bands]
+critical = 0.90
+high = 0.70
+medium = 0.40
+low = 0.15
+
+# §8.1 block-type weight override — a price page leans on the price cell + table rows.
+[block_type_weight]
+price = 1.00
+table_row = 0.90
+
+[signals]
+type = 1.0
+mag = 1.0
+num = 1.0
+date = 1.0
+neg = 1.0
+pos = 1.0
+kw = 1.0
+
+# §8.3 keyword/regex rules (drive the `kw` signal + sticky/action overrides). A bare price-tier
+# change carries NO keyword regex (it is decided by the type/mag/num signals + the price_increase
+# category) — only meaning-bearing phrases like "no longer available" fire a regex rule, so a
+# routine `$49→$59` lands at `mat:high`, not `critical` (the §10 worked example, sal≈0.86).
+[[rule]]
+id = "plan.removed"
+match = "(?i)\\b(no longer available|discontinued|sunset|legacy plan)\\b"
+weight = 1.0
+action = "escalate_human"
+sticky = true            # always escalate regardless of score banding
+cat = "plan_removed"
+
+# §8.3 category routing rows (cat → band + action).
+[[rule]]
+cat = "price_increase"
+mat = "high"
+act = "re_run_downstream"
+
+[[rule]]
+cat = "price_decrease"
+mat = "high"
+act = "re_run_downstream"
+
+[[rule]]
+cat = "plan_added"
+mat = "medium"
+act = "notify"
+
+[[rule]]
+cat = "plan_removed"
+mat = "high"
+act = "open_ticket"
+
+[salience_hints]
+keywords = ["price", "plan", "pricing", "/mo", "/yr", "per month", "per year", "tier"]

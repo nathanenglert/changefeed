@@ -1,0 +1,38 @@
+[package]
+name = "changefeed"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "changefeed CLI — IMPURE boundary: clock, RNG, network, disk, stdio, process::exit."
+
+# Binary is `cf` (alias `changefeed`).
+[[bin]]
+name = "cf"
+path = "src/main.rs"
+
+[dependencies]
+cf-core = { path = "../cf-core" }
+clap = { version = "4.5", features = ["derive", "env"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "gzip", "brotli", "zstd", "stream"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "net", "time"] }
+futures-util = "0.3"
+webpki-roots = "0.26"
+rusqlite = { version = "0.32", features = ["bundled"] }
+zstd = "0.13"
+ulid = "1"
+humantime = "2.1"
+humantime-serde = "1"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+serde_json = "1"
+
+[dev-dependencies]
+assert_cmd = "2.2"
+predicates = "3"
+insta = "1"
+tempfile = "3"
+wiremock = "0.6"
+criterion = "0.5"
+jsonschema = "0"

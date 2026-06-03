@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Pricing — Competitor</title>
+  <!-- volatile ONLY: DIFFERENT CSRF nonce than before, but nothing semantic changed -->
+  <meta name="csrf-token" content="9988776655443322110aabbccddeeff0">
+</head>
+<body>
+  <main>
+    <section class="PricingTable" data-csrf-nonce="9988776655443322110aabbccddeeff0">
+      <h1>Pricing</h1>
+      <!-- volatile ONLY: DIFFERENT viewer count than before -->
+      <p class="live-counter">412 viewing right now</p>
+
+      <div class="plan" data-plan="starter">
+        <h2>Starter Plan</h2>
+        <p class="price">$19/mo</p>
+        <ul>
+          <li>1 project</li>
+          <li>Community support</li>
+        </ul>
+      </div>
+
+      <div class="plan" data-plan="pro">
+        <h2>Pro Plan</h2>
+        <!-- price UNCHANGED at $49/mo — must normalize identically to pricing_before.html -->
+        <p class="price">$49/mo</p>
+        <ul>
+          <li>Unlimited projects</li>
+          <li>Priority support</li>
+        </ul>
+      </div>
+
+      <div class="plan" data-plan="enterprise">
+        <h2>Enterprise Plan</h2>
+        <p class="price">Contact us</p>
+        <ul>
+          <li>SSO &amp; SAML</li>
+          <li>Dedicated support</li>
+        </ul>
+      </div>
+    </section>
+  </main>
+</body>
+</html>
