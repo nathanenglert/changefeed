@@ -714,6 +714,53 @@ fn empty_hydration_root_triggers_needs_render_exit_7() {
 }
 
 // ===============================================================================================
+// render=never bypasses the needs_render heuristic — the documented escape hatch for the §4.5
+// exit-7 row. A JS-empty shell that WOULD be exit 7 under `auto` is diffed as raw HTML instead.
+// ===============================================================================================
+
+#[test]
+fn render_never_bypasses_needs_render_and_returns_body() {
+    let srv = TestServer::start();
+    // The SAME script-heavy SPA shell that `js_empty_page_triggers_needs_render_exit_7` proves is
+    // exit 7 under the default (auto) render mode: text ratio far below 0.05 AND an empty `#root`.
+    let big_script = "var data = [".to_string() + &"0,".repeat(20_000) + "0];";
+    let spa = format!(
+        "<html><head><script>{big_script}</script></head>\
+         <body><div id=\"root\"></div></body></html>"
+    );
+    srv.mount(
+        Mock::given(method("GET"))
+            .and(path("/spa"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(spa.into_bytes(), "text/html")),
+    );
+
+    // Identical to `fetcher_no_robots`, but with render=never — the only difference under test.
+    let fetcher = HttpFetcher::builder()
+        .user_agent("changefeed-test/1.0")
+        .timeout_secs(5)
+        .respect_robots(false)
+        .render(RenderMode::Never)
+        .clock(Box::new(FixedNowMs(1_000_000)))
+        .build()
+        .expect("fetcher");
+
+    match fetcher.fetch(&req(format!("{}/spa", srv.uri()))) {
+        FetchOutcome::Body { status, body, meta, .. } => {
+            assert_eq!(status, 200, "render=never must NOT short-circuit to exit 7");
+            assert!(
+                body.contains("id=\"root\""),
+                "the raw HTTP HTML is returned verbatim for diffing, not discarded"
+            );
+            assert_eq!(meta.tier, Some(FetchTier::Http));
+        }
+        other => panic!(
+            "render=never must diff the raw HTML, not return RenderNeeded — got {}",
+            outcome_name(&other)
+        ),
+    }
+}
+
+// ===============================================================================================
 // render=chromium → exit 7 unconditionally (no headless tier in the MVP), no fetch performed.
 // ===============================================================================================
 

@@ -72,7 +72,8 @@ pub struct HttpFetcher {
     pub user_agent: String,
     pub timeout_secs: u64,
     pub respect_robots: bool,
-    /// `render=chromium` (or a fired `needs_render` heuristic) → exit 7 in the MVP.
+    /// `render=chromium` → exit 7 unconditionally in the MVP; `render=auto` → exit 7 when the
+    /// `needs_render` heuristic fires; `render=never` → never exit 7 (raw HTTP HTML is diffed as-is).
     pub render: RenderMode,
     client: reqwest::Client,
     runtime: tokio::runtime::Runtime,
@@ -148,7 +149,8 @@ impl HttpFetcher {
     }
 
     /// The §4.5 outcome of one observation. Tier-1 HTTP only:
-    /// * `render=chromium` (or a fired `needs_render` heuristic) → `RenderNeeded` (exit 7);
+    /// * `render=chromium` (or a fired `needs_render` heuristic under `auto`) → `RenderNeeded`
+    ///   (exit 7); `render=never` bypasses the heuristic and diffs the raw HTML;
     /// * robots-disallowed (when `respect_robots`) → `Robots` (exit 4), crawl-delay floor honored;
     /// * 304 → `NotModified` (no body, no-change reason `http-304`);
     /// * 200 → `Body { final_url, etag, body, … }`;
@@ -243,8 +245,13 @@ impl HttpFetcher {
         };
 
         // (5) needs_render heuristic (§5.1). The MVP has no headless tier, so a JS-empty page is
-        // DETECTED and reported as exit 7 rather than producing a bogus empty diff.
-        if needs_render(&body) {
+        // DETECTED and reported as exit 7 rather than producing a bogus empty diff — UNLESS the
+        // caller set render="never", which is the documented escape hatch: "trust the raw HTTP
+        // HTML as-is, skip detection". Content-rich pages that merely look JS-empty to the cheap
+        // heuristic (e.g. an SPA-style shell whose real content IS in the static HTML) are then
+        // diffed instead of erroring. `render="never"` is precisely what the §4.5 exit-7 row and
+        // the chromium-path advice tell users to set to suppress this.
+        if self.render != RenderMode::Never && needs_render(&body) {
             return FetchOutcome::Error(CfError::RenderNeeded);
         }
 
