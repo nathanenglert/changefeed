@@ -4,7 +4,7 @@
 
 use crate::diff::ChangeUnit;
 use crate::diff::TAU_MATCH;
-use crate::model::{AnchorScheme, Delta, FetchTier};
+use crate::model::{AnchorScheme, ChangeType, Delta, FetchTier};
 
 /// The five confidence factors (§6.6), each 0..1.
 #[derive(Clone, Copy, Debug)]
@@ -37,14 +37,22 @@ pub fn c_fetch(tier: FetchTier) -> f32 {
 /// We recover the alignment quality from the unit: a clean anchor/struct match has `sim == 1.0`
 /// (set by the §7 phase-1 aligner); a similarity-filled pair carries its `sim < 1.0`. The
 /// `anchor_scheme` distinguishes explicit-anchor (`1.0`) from struct (`0.9`) for clean matches.
+///
+/// An `Added`/`Removed` unit is a CLEAN structural op detected by `slot_key` presence/absence — its
+/// `sim` is `0.0` by construction (§7) because there is no counterpart to score similarity against,
+/// NOT because the alignment was poor. Treat it like a clean anchor/struct match (mirroring
+/// [`c_match`], which already special-cases the no-overlap structural op); otherwise every
+/// added/removed event — a new incident, a removed plan, an API addition — would emit `conf = 0`
+/// and be discarded by an agent gating on `conf > 0.6` (§6.6, §6.7 Ex.3 shows an added block at 0.99).
 pub fn c_align(unit: &ChangeUnit, anchor_scheme: AnchorScheme) -> f32 {
-    if unit.sim >= 1.0 - 1e-6 {
-        match anchor_scheme {
-            AnchorScheme::Anchor => 1.0,
-            AnchorScheme::Struct => 0.9,
-        }
-    } else {
-        unit.sim.clamp(0.0, 1.0)
+    let clean = match anchor_scheme {
+        AnchorScheme::Anchor => 1.0,
+        AnchorScheme::Struct => 0.9,
+    };
+    match unit.ct {
+        ChangeType::Added | ChangeType::Removed => clean,
+        _ if unit.sim >= 1.0 - 1e-6 => clean,
+        _ => unit.sim.clamp(0.0, 1.0),
     }
 }
 

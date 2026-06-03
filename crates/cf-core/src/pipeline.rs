@@ -258,6 +258,11 @@ fn walk_seg(
 ) {
     for b in blocks {
         let anchor = path.last().cloned().unwrap_or_else(|| b.text.clone());
+        // Bound the nearest-heading anchor — a real heading is short, but a pathological page (a
+        // multi-KB heading) would otherwise blow the §6.1 8 KB event ceiling through this display
+        // field, which `enforce_size_ceiling` does not reach into the delta for (see B2). The join
+        // key is `fp` (the slot_key), not the anchor text, so capping is display-only and safe.
+        let anchor = cap_chars(&anchor, ANCHOR_CAP);
         let role = role_for(b.ty);
         let mut label_segments = path.clone();
         // Append the block's own short label (heading text or role) for display.
@@ -267,7 +272,7 @@ fn walk_seg(
             role.to_string()
         };
         label_segments.push(own);
-        let label_path = label_segments.join(" \u{203a} ");
+        let label_path = cap_chars(&label_segments.join(" \u{203a} "), LABEL_PATH_CAP);
         out.insert(
             b.slot_key,
             SegInfo {
@@ -512,7 +517,24 @@ fn enforce_size_ceiling(ev: &mut ChangeEvent) {
     if ev.seg.len() > 1 {
         ev.seg.truncate(1);
     }
+    if wire_len(ev) <= EVENT_CEILING_BYTES {
+        return;
+    }
+    // Final net: the only remaining unbounded fields are the retained seg's display strings
+    // (`anchor`/`label_path`). These are normally capped at build (`walk_seg`); cap again here so the
+    // "guaranteed-bounded event" contract holds even if a future field arrives uncapped. The join
+    // key (`fp`) is untouched, so addressing is unaffected.
+    for s in &mut ev.seg {
+        s.anchor = cap_chars(&s.anchor, ANCHOR_CAP);
+        s.label_path = cap_chars(&s.label_path, LABEL_PATH_CAP);
+    }
 }
+
+/// Per-field caps for the `seg` display strings (§6.2). An anchor is the nearest heading/label and a
+/// label_path is a breadcrumb — both are short for real content; the caps only bite on pathological
+/// pages (a multi-KB heading) and keep a single-segment event well under [`EVENT_CEILING_BYTES`].
+const ANCHOR_CAP: usize = 160;
+const LABEL_PATH_CAP: usize = 240;
 
 /// Serialized wire length of an event in bytes (0 on the impossible serialize error, which only
 /// matters as a conservative "don't over-truncate" fallback).
@@ -736,6 +758,57 @@ mod tests {
             Delta::Block { atrunc, .. } => assert!(*atrunc, "collapsed delta is marked truncated"),
             other => panic!("an oversized delta must collapse to a Block, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn event_size_ceiling_caps_an_oversized_anchor_and_label_path() {
+        use crate::model::{Action, ChangeType, Why};
+        // B2 regression: a change anchored under a multi-KB heading made `seg.anchor`/`seg.label_path`
+        // carry the full heading text, blowing the event past the 8 KB ceiling even though the delta
+        // (a tiny `Val`) and summary were already bounded. The guard must cap the seg display strings.
+        let huge = "MegaHeading ".repeat(4000); // ~48 KB
+        let mut ev = ChangeEvent {
+            v: "1",
+            id: EventId::new("cfe_test000001".into()),
+            src: Src { url: "https://x.test/p".into(), tid: "t".into(), title: None },
+            obs: "2026-06-02T00:00:00Z".into(),
+            base: Base { obs: String::new(), snap: "blake3:0".into(), rev: 0 },
+            seg: vec![Seg {
+                anchor: huge.clone(),
+                fp: "blake3:abcd1234".into(),
+                label_path: huge,
+                role: "price".into(),
+            }],
+            ct: ChangeType::Modified,
+            delta: Delta::Val { a: "$59/mo".into(), b: "$49/mo".into() },
+            why: Why {
+                sal: 0.8,
+                mat: Materiality::High,
+                cat: "price_increase".into(),
+                summary: "x".into(),
+            },
+            followup: Followup { act: Action::Notify, tgt: None, params: None, q: None },
+            conf: 0.9,
+            prov: Prov {
+                m: FetchTier::Http,
+                hash: "blake3:0".into(),
+                etag: None,
+                status: 200,
+                ms: None,
+                pack: None,
+            },
+        };
+        assert!(wire_len(&ev) > EVENT_CEILING_BYTES, "precondition: oversized anchor exceeds the ceiling");
+        let fp_before = ev.seg[0].fp.clone();
+        enforce_size_ceiling(&mut ev);
+        assert!(
+            wire_len(&ev) <= EVENT_CEILING_BYTES,
+            "event with an oversized anchor must be bounded, got {} bytes",
+            wire_len(&ev)
+        );
+        assert!(ev.seg[0].anchor.chars().count() <= ANCHOR_CAP, "anchor capped to ANCHOR_CAP");
+        assert!(ev.seg[0].label_path.chars().count() <= LABEL_PATH_CAP, "label_path capped to LABEL_PATH_CAP");
+        assert_eq!(ev.seg[0].fp, fp_before, "the join key (fp) is never truncated");
     }
 
     #[test]

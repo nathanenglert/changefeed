@@ -73,6 +73,15 @@ fn check_stdin(dir: &Path, fixture: &str, extra: &[&str]) -> (i32, String) {
     )
 }
 
+/// Like [`check_stdin`] but pipes a raw HTML string (for self-contained inline cases); returns exit.
+fn check_html(dir: &Path, html: &str, extra: &[&str]) -> i32 {
+    let mut cmd = cf(dir);
+    cmd.args(["check", "comp-pricing", "--stdin", "--url", URL, "--format", "jsonl"]);
+    cmd.args(extra);
+    let output = cmd.write_stdin(html.as_bytes().to_vec()).assert().get_output().clone();
+    output.status.code().unwrap_or(-1)
+}
+
 // ===========================================================================================
 // init
 // ===========================================================================================
@@ -488,6 +497,40 @@ fn seen_set_dedups_a_repeated_transition_to_exit_0() {
     // A→B AGAIN: this transition is already in the seen-set → dedup-suppressed → exit 0.
     let (c3, _) = check_stdin(dir.path(), "pricing_after.html", &[]);
     assert_eq!(c3, 0, "the repeated A→B transition is dedup-suppressed via the seen-set");
+}
+
+/// §7.4 / B3 — a REMOVED-block transition must also be recorded in the seen-set. `event_key_for`
+/// recovered the slot_key only from the NEW doc; a removed block is absent there, so the key came
+/// back `None`, the removal was emitted but never `mark_event`-ed, and an identical removal flap
+/// re-emitted on every poll. State A has three plans; B drops the last one (Enterprise) so the other
+/// slots keep their ordinals → a clean `removed` transition.
+#[test]
+fn seen_set_dedups_a_repeated_removed_block_transition() {
+    const PLANS_A: &str = "<html><body><section class=\"PricingTable\">\
+        <h3>Pro Plan</h3><p class=\"amount\">$49/mo</p>\
+        <h3>Team Plan</h3><p class=\"amount\">$99/mo</p>\
+        <h3>Enterprise Plan</h3><p class=\"amount\">$199/mo</p>\
+        </section></body></html>";
+    const PLANS_B: &str = "<html><body><section class=\"PricingTable\">\
+        <h3>Pro Plan</h3><p class=\"amount\">$49/mo</p>\
+        <h3>Team Plan</h3><p class=\"amount\">$99/mo</p>\
+        </section></body></html>";
+    let dir = project_with_pricing_target();
+    // Seed baseline = state A (all three plans).
+    let _ = cf(dir.path())
+        .args(["snapshot", "comp-pricing", "--url", URL, "--stdin"])
+        .write_stdin(PLANS_A.as_bytes().to_vec())
+        .assert();
+    // A→B: Enterprise removed → change, emitted (and now recorded in the seen-set).
+    assert_eq!(check_html(dir.path(), PLANS_B, &[]), 10, "first removal is a change");
+    // B→A: Enterprise re-added → a different, new transition.
+    assert_eq!(check_html(dir.path(), PLANS_A, &[]), 10, "re-adding is a new transition");
+    // A→B AGAIN: the removal transition is already in the seen-set → dedup-suppressed → exit 0.
+    assert_eq!(
+        check_html(dir.path(), PLANS_B, &[]),
+        0,
+        "the repeated removal transition is dedup-suppressed (regression: re-emitted as exit 10)"
+    );
 }
 
 /// §4.3 / §11 — `cf check` with no writable store must fall back to "first observation, no politeness

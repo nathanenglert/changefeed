@@ -728,13 +728,39 @@ pub enum IgnoreRule {
     Regex(String),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub enum AuthCfg {
     // ${ENV}-expanded at the cli boundary, redacted from logs.
     Header { headers: Vec<(String, String)> },
     Cookie { cookies: String },
     Basic { username: String, password: String },
     Browser, // Phase 2 (render=chromium)
+}
+
+/// §12: secret-bearing values are NEVER rendered in logs. `AuthCfg` carries `${ENV}`-expanded
+/// secrets, so its `Debug` is hand-written to redact every secret value (header values, the cookie
+/// string, the basic password) rather than derived — otherwise a stray `{:?}` on a `TargetCfg` /
+/// `Config` (which embed an `AuthCfg`) would leak a live token into a log line. Only non-secret
+/// shape is shown: the variant, the header NAMES, and the basic username.
+impl std::fmt::Debug for AuthCfg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AuthCfg::Header { headers } => {
+                let names: Vec<&str> = headers.iter().map(|(k, _)| k.as_str()).collect();
+                f.debug_struct("Header")
+                    .field("header_names", &names)
+                    .field("values", &"<redacted>")
+                    .finish()
+            }
+            AuthCfg::Cookie { .. } => f.debug_struct("Cookie").field("cookies", &"<redacted>").finish(),
+            AuthCfg::Basic { username, .. } => f
+                .debug_struct("Basic")
+                .field("username", username)
+                .field("password", &"<redacted>")
+                .finish(),
+            AuthCfg::Browser => f.write_str("Browser"),
+        }
+    }
 }
 
 /// Sink configuration — daemon Phase 2. Parsed but inert in MVP.
@@ -807,4 +833,32 @@ pub enum NoChangeReason {
     Http304,
     DocHashEqual,
     SubThreshold,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// §12 (B5) — `AuthCfg`'s `Debug` must redact every secret-bearing value so a stray `{:?}` (on
+    /// the `AuthCfg` itself or a `TargetCfg`/`Config` that embeds it, whose `Debug` delegates here)
+    /// can never leak a live credential into a log line. Header NAMES and the basic username are not
+    /// secrets and may show.
+    #[test]
+    fn auth_cfg_debug_redacts_secrets() {
+        let h = AuthCfg::Header {
+            headers: vec![("Authorization".into(), "Bearer tok_LIVE_SECRET".into())],
+        };
+        let s = format!("{h:?}");
+        assert!(!s.contains("tok_LIVE_SECRET"), "header value must be redacted, got {s}");
+        assert!(s.contains("Authorization"), "the header name is not a secret: {s}");
+
+        let c = AuthCfg::Cookie { cookies: "session=DEADBEEF; csrf=TOPSECRET".into() };
+        let s = format!("{c:?}");
+        assert!(!s.contains("DEADBEEF") && !s.contains("TOPSECRET"), "cookie must be redacted, got {s}");
+
+        let b = AuthCfg::Basic { username: "alice".into(), password: "hunter2pw".into() };
+        let s = format!("{b:?}");
+        assert!(!s.contains("hunter2pw"), "password must be redacted, got {s}");
+        assert!(s.contains("alice"), "username is not a secret: {s}");
+    }
 }

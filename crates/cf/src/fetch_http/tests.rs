@@ -884,6 +884,35 @@ fn basic_auth_is_attached_to_the_request() {
     );
 }
 
+/// §4.11 (AS-2) — cookie auth must attach the verbatim `Cookie` header to the request. The mock
+/// 200-gates on the cookie string, so a 200 proves it reached the wire.
+#[test]
+fn cookie_auth_is_attached_to_the_request() {
+    use cf_core::model::AuthCfg;
+    let srv = TestServer::start();
+    srv.mount(
+        Mock::given(method("GET"))
+            .and(path("/secure"))
+            .and(header("cookie", "session=abc123; csrf=xyz789"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string("<html><body><p>ok</p></body></html>"),
+            ),
+    );
+    let fetcher = fetcher_no_robots("changefeed-test/1.0");
+    let request = FetchRequest {
+        url: format!("{}/secure", srv.uri()),
+        etag: None,
+        last_modified: None,
+        auth: Some(AuthCfg::Cookie {
+            cookies: "session=abc123; csrf=xyz789".to_string(),
+        }),
+    };
+    assert!(
+        matches!(fetcher.fetch(&request), FetchOutcome::Body { status: 200, .. }),
+        "the Cookie header must be sent (mock 200-gates on it)"
+    );
+}
+
 // ---- helpers ----------------------------------------------------------------------------------
 
 fn outcome_name(o: &FetchOutcome) -> String {

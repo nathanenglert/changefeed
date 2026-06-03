@@ -691,18 +691,23 @@ fn event_key_for(
     prior_doc: Option<&CanonicalDoc>,
 ) -> Option<u128> {
     let fp = ev.seg.first()?.fp.strip_prefix("blake3:")?;
-    let new_block = find_block_by_fp(&new_doc.blocks, fp)?;
-    let to = new_block.norm_hash;
-    // §7.4 idempotency key = (tid, slot_key, from_norm_hash, to_norm_hash). `from` is the SAME
-    // slot's norm_hash in the prior observation (the seg.fp IS the slot_key fp, §6.2), or the empty
-    // hash for an added block — matching the diff's `from_norm_hash` convention. Using (from, to)
-    // (not the previous (to, to)) makes a transition a stable, distinct key so a flap-revert to a
-    // previously-seen transition dedups, while a genuinely new transition does not.
-    let from = prior_doc
-        .and_then(|p| find_block_by_fp(&p.blocks, fp))
-        .map(|b| b.norm_hash)
-        .unwrap_or_else(|| cf_core::NormHash::of(""));
-    Some(cf_core::EventKey::derive(tid, &new_block.slot_key, from, to).raw())
+    // The slot_key is identical on both sides for a `modified`/`restyled` block, present only on the
+    // new side for an `added` block, and only on the prior side for a `removed` block. Look on both
+    // sides and recover from whichever exists — a `removed` block is ABSENT from new_doc, so keying
+    // off new_doc alone (the old behavior) returned None and the removal was never recorded in the
+    // seen-set, re-emitting a repeated removal flap on every poll (B3).
+    let new_block = find_block_by_fp(&new_doc.blocks, fp);
+    let prior_block = prior_doc.and_then(|p| find_block_by_fp(&p.blocks, fp));
+    let slot_key = new_block.or(prior_block).map(|b| b.slot_key)?;
+    // §7.4 idempotency key = (tid, slot_key, from_norm_hash, to_norm_hash), matching the diff's
+    // ChangeUnit convention exactly: modified → (prior.norm, new.norm); added → (empty, new.norm);
+    // removed → (prior.norm, empty). Using (from, to) (not the old (to, to)) makes each transition a
+    // stable distinct key, so a flap-revert to a previously-seen transition dedups while a genuinely
+    // new transition does not.
+    let empty = cf_core::NormHash::of("");
+    let from = prior_block.map(|b| b.norm_hash).unwrap_or(empty);
+    let to = new_block.map(|b| b.norm_hash).unwrap_or(empty);
+    Some(cf_core::EventKey::derive(tid, &slot_key, from, to).raw())
 }
 
 fn find_block_by_fp<'a>(

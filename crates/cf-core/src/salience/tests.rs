@@ -528,6 +528,34 @@ fn c_align_distinguishes_anchor_struct_and_similarity() {
     assert_eq!(confidence::c_align(unit, AnchorScheme::Struct), 0.9);
 }
 
+#[test]
+fn added_and_removed_blocks_get_clean_c_align_not_zero_conf() {
+    // §6.6 / §6.7 Ex.3: an added/removed block is a CLEAN structural op (its `sim` is 0.0 by
+    // construction — there is no counterpart to score similarity against, NOT a poor match). So
+    // c_align must be the clean anchor/struct value, never the 0.0 sim. Regression: c_align used to
+    // return sim, zeroing `conf` for EVERY added/removed event (a new incident, a removed plan, an
+    // API addition) — exactly the high-value changes an agent gating on `conf > 0.6` would discard.
+    let mut blocks = vec![elem("h2", &[], vec![text("Updates")])];
+    for i in 0..10 {
+        blocks.push(elem("p", &[], vec![text(&format!("Stable paragraph number {i} with several words of content."))]));
+    }
+    let before = doc(vec![elem("main", &[], blocks.clone())]);
+    let mut after_blocks = blocks;
+    after_blocks.push(elem("p", &[], vec![text("A brand new final paragraph just appeared today with real content.")]));
+    let after = doc(vec![elem("main", &[], after_blocks)]);
+
+    let cs = diff(&before, &after, &profile()).unwrap();
+    let added = cs.units.iter().find(|u| u.ct == ChangeType::Added).expect("an added unit");
+    assert!((added.sim - 0.0).abs() < 1e-6, "an added block carries sim 0.0 by construction");
+    assert_eq!(confidence::c_align(added, AnchorScheme::Struct), 0.9, "added → clean struct align, not 0.0");
+    assert_eq!(confidence::c_align(added, AnchorScheme::Anchor), 1.0, "added under an explicit anchor → 1.0");
+
+    // End-to-end: the scored added event's conf is high (the bug made it exactly 0.0).
+    let events = score_pair(&before, &after, &packs::Pack::default());
+    let ev = events.iter().find(|e| e.ct == ChangeType::Added).expect("a scored added event");
+    assert!(ev.conf > 0.6, "an added block's conf must be high, got {} (regression: was 0.0)", ev.conf);
+}
+
 // ===========================================================================================
 // §8.5 explanation breakdown.
 // ===========================================================================================

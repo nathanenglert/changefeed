@@ -56,6 +56,14 @@ fn modified_noise(input: &NoiseInput<'_>) -> f32 {
         _ => false,
     };
     if numeric_only {
+        // §7.3 rule 2: "a number in a `kv` keyed /price|cost|qty|stock|version/ is **never** noise".
+        // A block like "In stock: 12" stays typed as prose (the whole text doesn't parse as a bare
+        // value, so `is_salient_numeric` above is false), yet a change to its number is material, not
+        // churn. Detect the salient-keyed kv shape and exempt it BEFORE the cue/short-counter damping
+        // — otherwise a real stock/qty/version move would be suppressed to low-`mat`.
+        if is_salient_kv(input.after_text) || is_salient_kv(input.before_text) {
+            return 0.0;
+        }
         // A volatility cue word (viewing/online/ago/now/watching/…) is strong evidence of a live
         // counter / relative timestamp → high noise (near-total suppression to mat=none).
         if has_volatility_cue(input.after_text) {
@@ -91,6 +99,26 @@ fn is_short_block(text: &str) -> bool {
 /// Salient-numeric block types whose value changes are never noise (§7.3 rule 2 exception).
 fn is_salient_numeric(ty: BlockType) -> bool {
     matches!(ty, BlockType::Price | BlockType::Number | BlockType::Date)
+}
+
+/// §7.3 rule 2: a `kv` block whose KEY matches `/price|cost|qty|stock|version/` — e.g. "Price: $49",
+/// "In stock: 12", "API version: 3" — carries a number that is never noise, even when the block was
+/// typed as plain prose. We require an explicit `Key: value` shape (a colon) and a short key so prose
+/// that merely mentions "version" mid-sentence is not swept in. Case-insensitive substring match on
+/// the key, mirroring the spec's regex alternation.
+fn is_salient_kv(text: &str) -> bool {
+    let key = match text.split_once(':') {
+        Some((k, _)) => k.trim(),
+        None => return false,
+    };
+    // A genuine kv label is short; bail on a long prefix (a sentence with a mid-clause colon).
+    if key.is_empty() || key.split_whitespace().count() > 5 {
+        return false;
+    }
+    let key = key.to_ascii_lowercase();
+    ["price", "cost", "qty", "quantity", "stock", "version"]
+        .iter()
+        .any(|k| key.contains(k))
 }
 
 /// Link/media block types whose add/remove is treated as volatile (§7.3 rule 4).
@@ -219,6 +247,45 @@ mod tests {
             delta: &d,
         });
         assert!((0.5..0.8).contains(&n), "an un-cued short counter is moderate noise, got {n}");
+    }
+
+    #[test]
+    fn salient_keyed_kv_numeric_change_is_never_noise() {
+        // §7.3 rule 2: a number in a kv keyed price|cost|qty|stock|version is NEVER noise, even when
+        // the block stays typed as prose. Regression: "In stock: 12"→"3" previously hit the un-cued
+        // short-counter rule (0.6) and got damped to low-`mat`, suppressing a real inventory move.
+        // These are pure-number values → the change is `numeric_only`, which is exactly the path that
+        // used to damp them; the kv key exemption must drive them to 0.0.
+        for (before, after, key) in [
+            ("In stock: 12", "In stock: 3", "In stock"),
+            ("API version: 3", "API version: 4", "API version"),
+            ("Qty: 100", "Qty: 5", "Qty"),
+        ] {
+            let d = idiff(vec![
+                (DiffOp::Keep, key),
+                (DiffOp::Keep, ": "),
+                (DiffOp::Del, before.rsplit(' ').next().unwrap()),
+                (DiffOp::Ins, after.rsplit(' ').next().unwrap()),
+            ]);
+            let n = noise_score(&NoiseInput {
+                ct: ChangeType::Modified,
+                block_type: BlockType::Paragraph,
+                before_text: before,
+                after_text: after,
+                delta: &d,
+            });
+            assert_eq!(n, 0.0, "a salient-keyed kv numeric change is never noise: {before:?}→{after:?} got {n}");
+        }
+        // A bare counter with the SAME number-shape but no salient key is still damped (key-gated).
+        let d = idiff(vec![(DiffOp::Del, "127"), (DiffOp::Ins, "132"), (DiffOp::Keep, " in cart")]);
+        let n = noise_score(&NoiseInput {
+            ct: ChangeType::Modified,
+            block_type: BlockType::Paragraph,
+            before_text: "127 in cart",
+            after_text: "132 in cart",
+            delta: &d,
+        });
+        assert!(n > 0.0, "a non-salient-keyed counter is still damped, got {n}");
     }
 
     #[test]
