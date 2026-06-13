@@ -222,13 +222,15 @@ Reading it field by field, in plain terms:
 | `base` | What we compared against: the previous observation's time, snapshot hash, and revision number. |
 | `seg` | Which block(s) changed — with a human-readable `label_path` ("Pricing › Pro Plan › price") and its `role` ("price"). |
 | `ct` | The change type: `added` / `removed` / `modified` / `reordered` / `restyled`. |
-| `delta` | The actual before/after. Here `enc: "val"` means a simple value change. |
+| `delta` | The actual before/after. The `enc` field says how it's encoded: `val` (a simple value change, as here), `idiff` (a word-level edit), `block` (a big rewrite), `move` (a reorder), or `struct` (see below). |
 | `why` | **Why it matters**: salience score (`sal`), materiality band (`mat`), category (`cat`), and a one-line human `summary`. |
 | `followup` | The suggested action (`act`). |
 | `conf` | Confidence that this is a real, meaningful change. |
 | `prov` | Provenance: how it was fetched (`m`), the raw-HTML hash, HTTP status, and which rule pack was used. |
 
 A nice detail: **optional fields are simply left out** when they don't apply (never sent as `null`). A field being present *means something*. This keeps events small and self-describing. The full machine-readable schema is published — run `cf schema` to print it.
+
+**When a whole table changes at once.** Sometimes a change isn't one cell — it's a price table or inventory grid where *dozens of rows* all moved. Emitting one event per row would flood the agent (and blow the size budget). So when a container (like a table) has more than a set number of changed rows (32 by default), `cf` bundles them into **one** event with `enc: "struct"`: it reports how many rows were added, removed, and modified, includes a small sample (up to 8) of the actual row changes, and notes how many more it didn't spell out (`truncated`). One bounded event instead of a hundred — the agent still learns "this table churned wholesale" without paying for every row.
 
 ---
 

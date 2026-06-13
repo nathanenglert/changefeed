@@ -812,3 +812,164 @@ fn low_anchor_diff_is_bounded() {
     let elapsed = t.elapsed();
     assert!(elapsed.as_secs() < 10, "low-anchor diff stays bounded, took {elapsed:?}");
 }
+
+// ===========================================================================================
+// §6.3 cascade clustering — a container's mass child set-change collapses to one enc:"struct".
+// ===========================================================================================
+
+/// Build a single-`<table>` doc whose `n` rows each carry `cell(i)` as their one cell's text.
+fn table_doc(n: usize, cell: impl Fn(usize) -> String) -> CanonicalDoc {
+    let rows: Vec<ExtractNode> = (0..n)
+        .map(|i| elem("tr", &[], vec![elem("td", &[], vec![text(&cell(i))])]))
+        .collect();
+    doc(vec![elem("table", &[], rows)])
+}
+
+#[test]
+fn mass_table_change_collapses_to_one_struct_unit() {
+    // 40 > max_children(32) rows each modified → ONE enc:"struct" on the table's slot, not 40 row
+    // events plus the oversized whole-table unit. Counts are exact; the sample is bounded to 8.
+    let n = cluster::MAX_CHILDREN + 8; // 40
+    let before = table_doc(n, |i| format!("Item {i}: $100"));
+    let after = table_doc(n, |i| format!("Item {i}: $200"));
+    let cs = diff(&before, &after, &profile()).unwrap();
+
+    assert_eq!(
+        cs.units.len(),
+        1,
+        "a mass table change is ONE struct event, got {:?}",
+        cs.units.iter().map(|u| u.ct).collect::<Vec<_>>()
+    );
+    let u = &cs.units[0];
+    assert_eq!(u.ct, ChangeType::Modified, "the cluster is a modified container");
+    match &u.delta {
+        Delta::Struct { added, removed, modified, sample, truncated } => {
+            assert_eq!(*added, 0);
+            assert_eq!(*removed, 0);
+            assert_eq!(*modified, n as u32, "every row counts as modified");
+            assert_eq!(sample.len(), cluster::STRUCT_SAMPLE, "sample is bounded to 8");
+            assert_eq!(*truncated, (n - cluster::STRUCT_SAMPLE) as u32, "remainder past the sample");
+        }
+        other => panic!("expected enc:struct, got {other:?}"),
+    }
+}
+
+#[test]
+fn table_change_at_or_below_cap_stays_per_row() {
+    // 20 <= max_children rows changed → individual events, NEVER a struct: the bounded fallback only
+    // engages PAST the cap (§6.3).
+    let n = 20;
+    let before = table_doc(n, |i| format!("Item {i}: $100"));
+    let after = table_doc(n, |i| format!("Item {i}: $200"));
+    let cs = diff(&before, &after, &profile()).unwrap();
+    assert!(
+        cs.units.iter().all(|u| !matches!(u.delta, Delta::Struct { .. })),
+        "below the cap there is no struct fallback, got {:?}",
+        cs.units.iter().map(|u| u.ct).collect::<Vec<_>>()
+    );
+    let modified_rows = cs
+        .units
+        .iter()
+        .filter(|u| u.block_type == BlockType::TableRow && u.ct == ChangeType::Modified)
+        .count();
+    assert_eq!(modified_rows, n, "all rows emit as individual modified events");
+}
+
+#[test]
+fn cluster_counts_added_rows() {
+    // before 36 rows, after 50: rows 0..35 edited (modified) + 14 appended rows (new ordinals →
+    // added). 50 > cap → struct with modified=36, added=14.
+    let before = table_doc(36, |i| format!("Item {i}: $100"));
+    let after = table_doc(50, |i| format!("Item {i}: $200"));
+    let cs = diff(&before, &after, &profile()).unwrap();
+    assert_eq!(cs.units.len(), 1, "one struct, got {:?}", cs.units.iter().map(|u| u.ct).collect::<Vec<_>>());
+    match &cs.units[0].delta {
+        Delta::Struct { added, removed, modified, .. } => {
+            assert_eq!(*modified, 36, "the 36 surviving rows are modified");
+            assert_eq!(*added, 14, "the 14 appended rows are added");
+            assert_eq!(*removed, 0);
+        }
+        other => panic!("expected enc:struct, got {other:?}"),
+    }
+}
+
+#[test]
+fn cluster_counts_removed_rows() {
+    // before 50 rows, after 36: rows 0..35 edited (modified) + 14 dropped rows (removed).
+    let before = table_doc(50, |i| format!("Item {i}: $100"));
+    let after = table_doc(36, |i| format!("Item {i}: $200"));
+    let cs = diff(&before, &after, &profile()).unwrap();
+    assert_eq!(cs.units.len(), 1, "one struct, got {:?}", cs.units.iter().map(|u| u.ct).collect::<Vec<_>>());
+    match &cs.units[0].delta {
+        Delta::Struct { added, removed, modified, .. } => {
+            assert_eq!(*modified, 36, "the 36 surviving rows are modified");
+            assert_eq!(*removed, 14, "the 14 dropped rows are removed");
+            assert_eq!(*added, 0);
+        }
+        other => panic!("expected enc:struct, got {other:?}"),
+    }
+}
+
+#[test]
+fn cluster_anchors_on_the_container_slot_and_is_deterministic() {
+    // The struct unit's slot_key is the TABLE's slot (so seg.fp points at the container), and the
+    // whole diff is byte-stable across runs (sorted output, no map-iteration leakage).
+    // Salient `Price:` rows → each child is a genuine value move (noise 0.0), so the aggregated
+    // cluster noise (the MIN over children) stays low and the change reads as material.
+    let before = table_doc(40, |i| format!("Tier {i} Price: $100"));
+    let after = table_doc(40, |i| format!("Tier {i} Price: $200"));
+    let table_slot = before.blocks.iter().find(|b| b.ty == BlockType::Table).unwrap().slot_key;
+
+    let cs1 = diff(&before, &after, &profile()).unwrap();
+    let cs2 = diff(&before, &after, &profile()).unwrap();
+    assert_eq!(cs1.units.len(), 1);
+    assert_eq!(cs1.units[0].slot_key, table_slot, "the cluster anchors on the table container");
+    assert_eq!(cs1.units[0].slot_key, cs2.units[0].slot_key, "deterministic slot");
+    // A clustered real-value table change is low noise (= MIN child noise), not damped to none.
+    assert!(cs1.units[0].noise_score < 0.5, "a real row-value cluster is low noise, got {}", cs1.units[0].noise_score);
+}
+
+#[test]
+fn wholly_removed_table_clusters_as_a_removed_struct() {
+    // A whole >max_children table disappears: every child is Removed, so the cluster's ct is
+    // Removed (not Modified) — the container itself was removed (§6.2).
+    let before = table_doc(40, |i| format!("Tier {i} Price: $100"));
+    let after = doc(vec![elem("p", &[], vec![text("The pricing table has been retired.")])]);
+    let cs = diff(&before, &after, &profile()).unwrap();
+    let s = cs
+        .units
+        .iter()
+        .find(|u| matches!(u.delta, Delta::Struct { .. }))
+        .expect("a struct cluster for the removed table");
+    assert_eq!(s.ct, ChangeType::Removed, "a wholly-removed table is a removed struct");
+    match &s.delta {
+        Delta::Struct { removed, added, modified, .. } => {
+            assert_eq!(*removed, 40);
+            assert_eq!(*added, 0);
+            assert_eq!(*modified, 0);
+        }
+        _ => unreachable!(),
+    }
+}
+
+#[test]
+fn wholly_added_table_clusters_as_an_added_struct() {
+    // The mirror: a >max_children table appears where there was none → an Added struct.
+    let before = doc(vec![elem("p", &[], vec![text("Pricing coming soon.")])]);
+    let after = table_doc(40, |i| format!("Tier {i} Price: $100"));
+    let cs = diff(&before, &after, &profile()).unwrap();
+    let s = cs
+        .units
+        .iter()
+        .find(|u| matches!(u.delta, Delta::Struct { .. }))
+        .expect("a struct cluster for the added table");
+    assert_eq!(s.ct, ChangeType::Added, "a wholly-added table is an added struct");
+    match &s.delta {
+        Delta::Struct { removed, added, modified, .. } => {
+            assert_eq!(*added, 40);
+            assert_eq!(*removed, 0);
+            assert_eq!(*modified, 0);
+        }
+        _ => unreachable!(),
+    }
+}

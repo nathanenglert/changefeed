@@ -872,6 +872,77 @@ mod tests {
     }
 
     #[test]
+    fn struct_cascade_event_round_trips_and_validates_against_schema() {
+        use crate::model::{Action, Base, EventId, Prov, Seg, Src};
+        // A §6.3 cascade event: aggregate counts + a bounded `sample` of nested child deltas (the
+        // schema points each `sample` item back at `#/$defs/delta`, so the recursion must validate).
+        let ev = ChangeEvent {
+            v: "1",
+            id: EventId::new("cfe_struct".into()),
+            src: Src { url: "https://shop.example/inventory".into(), tid: "inv".into(), title: None },
+            obs: "2026-06-02T00:00:00Z".into(),
+            base: Base { obs: "2026-06-01T00:00:00Z".into(), snap: "blake3:00".into(), rev: 7 },
+            seg: vec![Seg {
+                anchor: "Inventory".into(),
+                fp: "blake3:abc123".into(),
+                label_path: "Inventory \u{203a} table-cell".into(),
+                role: "table-cell".into(),
+            }],
+            ct: ChangeType::Modified,
+            delta: Delta::Struct {
+                added: 14,
+                removed: 3,
+                modified: 40,
+                sample: vec![
+                    Delta::Val { a: "$200".into(), b: "$100".into() },
+                    Delta::Idiff {
+                        ops: vec![
+                            IdiffOp { op: DiffOp::Del, text: "in stock".into() },
+                            IdiffOp { op: DiffOp::Ins, text: "sold out".into() },
+                        ],
+                    },
+                ],
+                truncated: 49,
+            },
+            why: Why {
+                sal: 0.78,
+                mat: Materiality::High,
+                cat: "content_edit".into(),
+                summary: "Inventory: 57 rows changed (+14/-3/~40).".into(),
+            },
+            followup: Followup { act: Action::ReRunDownstream, tgt: None, params: None, q: None },
+            conf: 0.9,
+            prov: Prov {
+                m: FetchTier::Http,
+                hash: "blake3:00".into(),
+                etag: None,
+                status: 200,
+                ms: None,
+                pack: None,
+            },
+        };
+
+        let s = to_wire(&ev).unwrap();
+        assert!(s.contains(r#""enc":"struct""#), "emits the struct enc tag: {s}");
+        assert!(!s.contains("null"), "no field serializes as null: {s}");
+        let back: ChangeEvent = serde_json::from_str(&s).unwrap();
+        match back.delta {
+            Delta::Struct { added, removed, modified, sample, truncated } => {
+                assert_eq!((added, removed, modified, truncated), (14, 3, 40, 49));
+                assert_eq!(sample.len(), 2, "sample children survive the round-trip");
+            }
+            other => panic!("struct enc lost on round-trip: {other:?}"),
+        }
+
+        let schema_json: serde_json::Value =
+            serde_json::from_str(schema_for_version("1").unwrap()).unwrap();
+        let validator = jsonschema::validator_for(&schema_json).unwrap();
+        let instance: serde_json::Value = serde_json::from_str(&s).unwrap();
+        let errors: Vec<String> = validator.iter_errors(&instance).map(|e| e.to_string()).collect();
+        assert!(errors.is_empty(), "struct cascade event failed schema: {errors:?}");
+    }
+
+    #[test]
     fn schema_rejects_unknown_followup_act_and_extra_field() {
         let schema_json: serde_json::Value =
             serde_json::from_str(schema_for_version("1").unwrap()).unwrap();

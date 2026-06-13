@@ -382,8 +382,8 @@ pub struct Seg {
 }
 
 /// §6.3 tagged by `enc`. Modeled so illegal combinations are unrepresentable.
-/// `a` = after, `b` = before (`a` first). `move`/`struct` are Phase-2-emitted variants
-/// (present, unused in MVP).
+/// `a` = after, `b` = before (`a` first). All five variants are emitted: `move` by a reorder
+/// (§7.1), `struct` by cascade clustering (§6.3, [`crate::diff::cluster`]).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "enc", rename_all = "lowercase")]
 pub enum Delta {
@@ -404,14 +404,14 @@ pub enum Delta {
         from: u32,
         to: u32,
         key: String,
-    }, // Phase 2
+    }, // §7.1 reorder
     Struct {
         added: u32,
         removed: u32,
         modified: u32,
-        sample: Vec<Delta>,
+        sample: Vec<Delta>, // ≤8 representative child deltas (§6.3)
         truncated: u32,
-    }, // Phase 2
+    }, // §6.3 cascade-clustered container set-change
 }
 
 /// §6.3 op-codes: `=` keep / `-` delete / `+` insert.

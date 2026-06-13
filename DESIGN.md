@@ -1359,7 +1359,7 @@ Politeness is **on by default** and per-host, because this tool is pointed at ot
 - **Fetch:** Tier 1 HTTP only (`reqwest`/`rustls`) + ETag/304 short-circuit. No headless (`render="chromium"` → exit `7`).
 - **Extract/Normalize:** `html5ever` + Readability and `selector` strategies; the **full volatile-strip normalization set (§5.3)** — non-negotiable; without it the tool flaps *and* the storage no-op-is-free promise fails.
 - **Segment:** `slot_key` (anchor + struct) + `block_id`; `price`/`date`/`number`/`text`/`heading`/`table_row` typing.
-- **Diff:** `slot_key`-anchor → LIS → similarity-fill; Myers intra-block diff; static ignore masking; idempotency dedup. *(Volatility/auto-learning and debounce are Phase 2 and daemon-only.)*
+- **Diff:** `slot_key`-anchor → LIS → similarity-fill; Myers intra-block diff; static ignore masking; idempotency dedup; all five `delta.enc` encodings, incl. `move` (reorder, §7.1) and `struct` (cascade clustering of a container's >`max_children` child set-change, §6.3). *(Volatility/auto-learning and debounce are Phase 2 and daemon-only.)*
 - **Salience:** the **seven** deterministic signals + noisy-OR (`vol` is Phase-2, `w_vol=1.0` in MVP); shipped packs `pricing`, `api-docs`, `status-page`. **LLM tier off / not built.** `conf` computed per §6.6.
 - **Storage:** the **simple MVP model (§9.8)** — one previous `CanonicalDoc` per target as a single `zstd-19` blob + raw HTML blob, fixed-ring "keep last N", **no CAS, no packfiles, no GC**. `doc_hash`/304 short-circuits intact.
 - **CLI:** `init`, `watch`, `check` (incl. `--peek`/`--no-store`), `snapshot`, `diff`, `feed` (incl. `--limit`/`--after-cursor`), `ls`, `show`, `rules`, `schema`. Exit codes, JSONL/pretty, stdin contracts. `changefeed.toml`.
@@ -1371,7 +1371,6 @@ Politeness is **on by default** and per-host, because this tool is pointed at ot
 - **Fleet-scale storage engine (§9.0.1–§9.6):** CAS + BLAKE3-128 + zstd delta-chaining + per-domain trained dictionary + rebasing (K=24, on-event) + SQLite index + packfiles + mark-and-sweep `cf gc` + `cf pack`/`cf fsck`. This is the bytes-per-change optimization, needed at scale, not at first ship.
 - **`cf daemon`** with schedules, sinks (jsonl/webhook), per-host politeness state, `cf feed --tail`.
 - **MCP server** (`cf mcp`) and the five tools.
-- **Cascade clustering** + the `reordered`/`move`/`struct` delta encodings.
 - **Multi-page** modes (`feed`, `paginated`, `infinite`).
 
 ### Phase 3 (ecosystem & scale)

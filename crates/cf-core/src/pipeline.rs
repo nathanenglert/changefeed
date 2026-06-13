@@ -499,11 +499,12 @@ fn redesign_guard_event(
 
 /// §6.1 rule 3 — the hard per-event size ceiling. No single event may exceed ~8 KB on the wire so an
 /// agent can rely on a bounded token cost per change. The per-block 600c truncation and ±6-token
-/// idiff elision keep the common event far under (~700–900 B), but a pathological delta — a block
-/// with hundreds of scattered idiff edits, a very wide table row — could still blow past. The MVP has
-/// no `enc:struct` cascade fallback (Phase 2), so the graceful degradation here is: (1) collapse an
-/// oversized delta to a capped `Block` summary (≤600c/side, `atrunc:true`); (2) if still over (a huge
-/// `seg` array), keep only the primary segment. The result is a guaranteed-bounded event.
+/// idiff elision keep the common event far under (~700–900 B); a *mass* child set-change is bounded
+/// upstream by cascade clustering ([`crate::diff::cluster`], `enc:"struct"`). This guard is the last
+/// net for a single pathological delta that still blows past — a block with hundreds of scattered
+/// idiff edits, a very wide table row: (1) collapse the oversized delta to a capped `Block` summary
+/// (≤600c/side, `atrunc:true`); (2) if still over (a huge `seg` array), keep only the primary
+/// segment. The result is a guaranteed-bounded event.
 const EVENT_CEILING_BYTES: usize = 8 * 1024;
 
 fn enforce_size_ceiling(ev: &mut ChangeEvent) {
@@ -542,10 +543,22 @@ fn wire_len(ev: &ChangeEvent) -> usize {
     event::to_wire(ev).map(|s| s.len()).unwrap_or(0)
 }
 
-/// Collapse any delta to a bounded `Block` delta (≤600c/side, `atrunc:true`) — the §6.3 worst-case
-/// encoding available in MVP. Reconstructs both sides from whatever encoding the delta carried.
+/// Collapse an oversized delta to a bounded encoding. A cascade [`Delta::Struct`] (whose `sample`
+/// child deltas blew the ceiling) keeps its aggregate counts and stays a `struct` — the samples are
+/// dropped and folded into `truncated`, so the counts and the coherent `why.summary` ("N rows
+/// changed") survive (an empty-sample struct is ~120 B). Every other encoding collapses to a bounded
+/// `Block` (≤600c/side, `atrunc:true`), reconstructing both sides from whatever it carried.
 fn collapse_delta(d: &Delta) -> Delta {
     use crate::model::DiffOp;
+    if let Delta::Struct { added, removed, modified, sample, truncated } = d {
+        return Delta::Struct {
+            added: *added,
+            removed: *removed,
+            modified: *modified,
+            sample: Vec::new(),
+            truncated: truncated + sample.len() as u32,
+        };
+    }
     let (before, after) = match d {
         Delta::Val { a, b } => (b.clone(), a.clone()),
         Delta::Idiff { ops } => {
@@ -606,6 +619,12 @@ fn build_summary(se: &ScoredEvent, seg: &SegInfo, changeset: &Changeset) -> Stri
     match &se.delta {
         Delta::Val { a, b } => truncate160(&format!("{label} {b}\u{2192}{a}.")),
         Delta::Block { b: None, .. } => truncate160(&format!("{label} added.")),
+        // §6.3 cascade — a container's mass child set-change reads as its aggregate counts. The
+        // counts lead (they are the gist and always fit); the container is identified by `seg.fp`.
+        Delta::Struct { added, removed, modified, .. } => {
+            let total = added + removed + modified;
+            truncate160(&format!("{total} rows changed (+{added}/-{removed}/~{modified})."))
+        }
         _ => truncate160(&format!("{label} {}.", se.cat)),
     }
 }
@@ -938,6 +957,116 @@ mod tests {
             assert_eq!(a.act, b.act);
             assert_eq!(a.conf, b.conf);
             assert_eq!(a.slot_key, b.slot_key);
+        }
+    }
+
+    #[test]
+    fn mass_table_change_emits_one_struct_event_end_to_end() {
+        // §6.3: a table whose 40 (> max_children) rows all move in value collapses to ONE
+        // `enc:"struct"` event end-to-end — not 40 row events, and not the oversized whole-table
+        // delta the size ceiling would otherwise have to truncate.
+        fn full_profile() -> Profile {
+            Profile {
+                profile_id: "inv".into(),
+                render: RenderMode::Auto,
+                strategy: ExtractStrategy::Full,
+                root_selector: None,
+                strip_attrs: Vec::new(),
+                strip_text: Vec::new(),
+                unordered: Vec::new(),
+                mode: SourceMode::Page,
+                max_pages: 1,
+                types: Vec::new(),
+                archetype: Some("pricing".into()),
+                salience_hints: Vec::new(),
+            }
+        }
+        fn d(html: &str) -> CanonicalDoc {
+            let mut x = canonicalize(html, &full_profile()).unwrap();
+            x.url = "https://x.test/inventory".into();
+            x
+        }
+        let rows = |v: &str| {
+            (0..40)
+                .map(|i| format!("<tr><td>Tier {i} Price: {v}</td></tr>"))
+                .collect::<String>()
+        };
+        let before = d(&format!("<html><body><main><table>{}</table></main></body></html>", rows("$100")));
+        let after = d(&format!("<html><body><main><table>{}</table></main></body></html>", rows("$200")));
+
+        match run(Some(&before), &after) {
+            ObservationResult::Changed { events, .. } => {
+                assert_eq!(
+                    events.len(),
+                    1,
+                    "a mass table change is ONE struct event, got {}",
+                    events.len()
+                );
+                let e = &events[0];
+                match &e.delta {
+                    Delta::Struct { modified, truncated, sample, .. } => {
+                        assert_eq!(*modified, 40, "all rows modified");
+                        assert_eq!(sample.len(), 8, "sample bounded to 8");
+                        assert_eq!(*truncated, 32);
+                    }
+                    other => panic!("expected enc:struct, got {other:?}"),
+                }
+                assert!(
+                    e.why.summary.contains("rows changed"),
+                    "summary describes the cascade, got {:?}",
+                    e.why.summary
+                );
+                // The whole event is well under the §6.1 8 KB ceiling (the point of clustering).
+                assert!(wire_len(e) < EVENT_CEILING_BYTES, "clustered event is bounded");
+            }
+            _ => panic!("a mass table change must be Changed"),
+        }
+    }
+
+    #[test]
+    fn oversized_struct_collapses_to_counts_and_stays_a_struct() {
+        use crate::model::{Action, Base, ChangeType, DiffOp, EventId, Followup, IdiffOp, Prov, Seg, Src, Why};
+        // A cascade over very wide rows: 8 huge idiff samples blow the 8 KB ceiling. The guard must
+        // drop the samples (folding them into `truncated`) yet KEEP the struct — the counts and the
+        // "N rows changed" summary stay coherent (regression for the old empty-Block collapse).
+        let big = |seed: usize| Delta::Idiff {
+            ops: (0..400)
+                .map(|i| IdiffOp {
+                    op: if i % 2 == 0 { DiffOp::Del } else { DiffOp::Ins },
+                    text: format!("verylongtoken{seed}_{i} "),
+                })
+                .collect(),
+        };
+        let sample: Vec<Delta> = (0..8).map(big).collect();
+        let mut ev = ChangeEvent {
+            v: "1",
+            id: EventId::new("cfe_test000002".into()),
+            src: Src { url: "https://x.test/t".into(), tid: "t".into(), title: None },
+            obs: "2026-06-02T00:00:00Z".into(),
+            base: Base { obs: String::new(), snap: "blake3:0".into(), rev: 0 },
+            seg: vec![Seg { anchor: "T".into(), fp: "blake3:0".into(), label_path: "p".into(), role: "table-cell".into() }],
+            ct: ChangeType::Modified,
+            delta: Delta::Struct { added: 5, removed: 3, modified: 60, sample, truncated: 42 },
+            why: Why {
+                sal: 0.7,
+                mat: Materiality::High,
+                cat: "content_edit".into(),
+                summary: "68 rows changed (+5/-3/~60).".into(),
+            },
+            followup: Followup { act: Action::Notify, tgt: None, params: None, q: None },
+            conf: 0.9,
+            prov: Prov { m: FetchTier::Http, hash: "blake3:0".into(), etag: None, status: 200, ms: None, pack: None },
+        };
+        assert!(wire_len(&ev) > EVENT_CEILING_BYTES, "precondition: the wide-sample struct exceeds the ceiling");
+        enforce_size_ceiling(&mut ev);
+        assert!(wire_len(&ev) <= EVENT_CEILING_BYTES, "collapsed struct is bounded, got {} B", wire_len(&ev));
+        match &ev.delta {
+            Delta::Struct { added, removed, modified, sample, truncated } => {
+                assert_eq!((*added, *removed, *modified), (5, 3, 60), "counts survive");
+                assert!(sample.is_empty(), "samples dropped to fit");
+                assert_eq!(*truncated, 50, "the 8 dropped samples fold into truncated (42 + 8)");
+            }
+            other => panic!("an oversized struct must stay a struct, got {other:?}"),
         }
     }
 }
