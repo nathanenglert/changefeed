@@ -4,11 +4,11 @@
 //! per-block content is rehashed so the diff never sees the ignored content:
 //!
 //! - `selector` matches a block → **drops** the block entirely (it does not participate in
-//!   alignment). MVP selector matching mirrors segment's [`TypeOverrides`] reach: a `.class` token,
+//!   alignment). MVP selector matching mirrors segment's `TypeOverrides` reach: a `.class` token,
 //!   an `#id`, or a bare tag name matched against the block's own type/anchor — full CSS-descendant
 //!   matching is Phase 2. Because segment discards the originating element's attrs, the selector is
 //!   matched against the recorded `block_id` *anchor scheme* and the block's type/slot — see
-//!   [`selector_matches`] for the supported forms.
+//!   `selector_matches` for the supported forms.
 //! - `regex` matching only *part* of a block's text → **redacts** the matched span with the
 //!   object-replacement sentinel `\u{fffc}` before hashing (so "Last updated: 2026-06-02" stops
 //!   flapping but the surrounding sentence still diffs).
@@ -86,7 +86,7 @@ fn ignore_rules(profile: &Profile) -> impl Iterator<Item = IgnoreRule> + '_ {
 
 /// Build the masking transform directly from a typed [`IgnoreRule`] list. This is the contract the
 /// cli uses (it has the real `TargetCfg.ignore`); [`apply`] is the profile-threaded convenience used
-/// in pure tests. Both funnel into [`mask_blocks`].
+/// in pure tests. Both funnel into `mask_blocks`.
 pub fn apply_rules(doc: &CanonicalDoc, rules: &[IgnoreRule]) -> CanonicalDoc {
     if rules.is_empty() {
         return doc.clone();

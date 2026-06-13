@@ -18,6 +18,7 @@
 //! the bounded LSH-band+window candidate count — never `O(B²)`.
 
 pub mod align;
+pub mod cluster;
 pub mod intra;
 pub mod lis;
 pub mod lsh;
@@ -215,7 +216,11 @@ fn run(old: &CanonicalDoc, new: &CanonicalDoc) -> Changeset {
     // Phase 3: similarity fill over the residual (slot_key changed / genuinely new / removed).
     similarity_fill(&old_flat, &new_flat, &alignment, &mut units);
 
-    finalize(units)
+    // Phase 4: cascade clustering (§6.3) — collapse a container's over-`max_children` child set-change
+    // into one bounded `enc:"struct"` unit. A no-op (returns the units as-is) unless a table churns
+    // wholesale. Runs after finalize() so it can aggregate the per-child noise scores.
+    let cs = finalize(units);
+    Changeset { units: cluster::cluster_cascades(cs.units, old, new) }
 }
 
 /// Compare two block `value`s for the anchor fast path, given that the caller has ALREADY proven the

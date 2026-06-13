@@ -206,13 +206,13 @@ pub struct Seg {
 }
 
 /// §6.3 tagged by `enc`. Modeled so illegal combinations are unrepresentable.
-/// `a` = after, `b` = before (a first). move/struct are Phase-2-emitted variants (present, unused in MVP).
+/// `a` = after, `b` = before (a first). All five variants are emitted.
 pub enum Delta {
     Val    { a: String, b: String },
     Idiff  { ops: Vec<IdiffOp> },                                  // [op,text] tuples, ±6-token context
     Block  { a: String, b: Option<String>, atrunc: bool },        // ≤600c each side
-    Move   { from: u32, to: u32, key: String },                   // Phase 2
-    Struct { added: u32, removed: u32, modified: u32, sample: Vec<Delta>, truncated: u32 }, // Phase 2
+    Move   { from: u32, to: u32, key: String },                   // §7.1 reorder
+    Struct { added: u32, removed: u32, modified: u32, sample: Vec<Delta>, truncated: u32 }, // §6.3 cascade cluster
 }
 pub enum DiffOp { Keep, Del, Ins }                 // "=" / "-" / "+"
 pub struct IdiffOp { pub op: DiffOp, pub text: String }

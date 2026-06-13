@@ -1,71 +1,39 @@
 # changefeed
 
-**Turn a web page's changes into compact, structured change events for AI agents — instead of re-stuffing whole pages into an LLM.**
+**Turn a web page's changes into compact, structured events for AI agents — instead of re-stuffing whole pages into an LLM.**
 
-`changefeed` (binary: `cf`) re-observes a URL and emits, for each meaningful change, a tiny JSON event carrying three things:
+`changefeed` (binary: `cf`) re-observes a URL and, for each *meaningful* change, emits one tiny JSON event with three things:
 
-1. **the delta** — what actually changed, computed by a deterministic, LLM-free pipeline;
-2. **why it matters** — a salience score + materiality band + category;
-3. **a suggested follow-up** — one action from a fixed agent-facing taxonomy.
+- **the delta** — what actually changed, from a deterministic, LLM-free pipeline;
+- **why it matters** — a salience score, materiality band, and category;
+- **a follow-up** — one suggested action from a fixed, agent-facing set.
 
-The dominant case — *nothing changed* — costs the agent a single integer compare (exit `0`, empty stdout). Only a real, material change requires reading stdout. A `$49 → $59` price move becomes a ~300-token event instead of two full page copies plus reasoning.
+The common case — *nothing changed* — costs one integer compare (exit `0`, empty output, zero tokens). Only a real change needs reading. A `$49 → $59` price move becomes a ~300-token event instead of two full page copies plus reasoning. **Noise resistance is the point:** a rotating "127 viewing now" counter or a `?v=12345` cache-buster is a free no-op, while a real price or status change fires.
 
-> **Status:** MVP (v0.1). Tier-1 HTTP only; the optional LLM tier and headless render are off by default. 264 tests pass; `clippy -D warnings` clean. See [MVP scope](#mvp-scope) for what's deferred to Phase 2.
+> **Status: v1.0** — Tier-1 HTTP. Headless render, the daemon, and an LLM tier are deferred to Phase 2 (see the roadmap in [DESIGN.md](DESIGN.md)). 281 tests pass; `clippy -D warnings` clean.
 
----
+## The mental model
 
-## Why
+An agent polls in a loop and branches on the **exit code** — usually without reading the output at all:
 
-An agent that watches pages by re-feeding the whole DOM to a model pays for the entire page every poll, drowns in boilerplate/nonce/timestamp churn, and gets a non-deterministic "did anything change?" answer. `changefeed` inverts that: a deterministic core strips volatile noise, aligns the page against the last observation, scores only what changed, and hands the agent a bounded event (or just an exit code). **Noise resistance is the product** — a rotating "127 viewing now" counter or a `?v=12345` cache-buster is a zero-token no-op, while a real price or status change fires.
+- **`0`** — no material change. Empty output, zero tokens. *(the dominant case)*
+- **`10`** — a real change at/above your `--min-salience`. Read the JSON on stdout and act.
 
-## How it works
-
-A pure, deterministic pipeline (no clock, RNG, network, or disk in the core):
-
-```
-fetch → extract → normalize → segment → diff → salience → event
-        (Readability/   (§5.3 volatile   (slot_key /   (slot-anchor → LIS    (7-signal      (frozen wire
-         selector)       strip, NFC,       block_id /    → LSH fill → Myers;   noisy-OR +      schema +
-                         URL canon.)       norm_hash)    noise + dedup)        confidence)     JSON Schema)
-```
-
-Three distinct identities keep alignment honest (§2.1): `slot_key` (the **only** cross-observation join key, text-free), `block_id` (within-observation content handle), and `norm_hash` (did this block change?).
-
-## Install
-
-Requires **Rust 1.80+**. Build from source:
-
-```bash
-cargo build --release          # binary at target/release/cf
-# or install onto your PATH:
-cargo install --path crates/cf
-```
+`0`, `10`, and `11` (first observation) are a frozen contract; other codes signal errors (bad config, fetch failure, rate-limited, …). Full exit-code table → [DESIGN.md](DESIGN.md).
 
 ## Quick start
 
 ```bash
-cf init                                   # scaffold ./changefeed.toml + ./.changefeed/
-cf watch https://acme.com/pricing         # register a target
-cf check acme-pricing --min-salience medium   # observe once → exit code (+ event on stdout if changed)
+cf init                                        # scaffold ./changefeed.toml + ./.changefeed/
+cf watch https://acme.com/pricing              # register a target
+cf check acme-pricing --min-salience medium    # observe once → exit code (+ event if changed)
 ```
 
-`cf check <url>` with no config is also legal — it fetches, compares to the last stored snapshot (or seeds a baseline), prints the event, and sets the exit code. **This is the call an agent makes in a loop:**
-
-```bash
-while sleep 900; do
-  out=$(cf check acme-pricing --min-salience medium --format jsonl)   # one fetch, one diff
-  case $? in
-    0)  : ;;                                              # no change — zero tokens
-    10) printf '%s\n' "$out" | your-agent ingest-change ;;# reuse the captured event
-    3)  sleep 60 ;;                                       # transient fetch error, back off
-    6)  sleep "$(printf '%s' "$out" | jq -r '.crawl.retry_after // 60')" ;;
-  esac
-done
-```
+`cf check <url>` with no config also works — it seeds a baseline on first run and diffs thereafter. To wire it into an agent, branch on the exit code; the polling loop is in **[HOW_IT_WORKS.md](HOW_IT_WORKS.md)**.
 
 ## Example change event
 
-`cf check` (or `cf score --dry-run before.html after.html --archetype pricing`) emits one compact JSON object per material change:
+`cf check` emits one compact JSON object per material change:
 
 ```json
 {
@@ -88,99 +56,59 @@ done
 }
 ```
 
-The wire schema is frozen and self-describing — run `cf schema` for the published JSON Schema (`changefeed/v1`).
+The wire schema is frozen and self-describing — run `cf schema` for the published JSON Schema (`changefeed/v1`). A field-by-field gloss is in [HOW_IT_WORKS.md](HOW_IT_WORKS.md).
 
-## Exit codes — the cheap branch
+## How it works
 
-An agent polls and branches on `$?` **without parsing stdout at all**. No-change vs failure is always distinguishable by exit code alone.
+A pure, deterministic pipeline — no clock, randomness, network, or disk in the core, so the same two page versions always produce the same verdict:
 
-| Code | Meaning | Agent reaction |
-|-----:|---------|----------------|
-| `0`  | No change (nothing material per ignore rules + `--min-salience`) | Do nothing — empty stdout. |
-| `10` | **Change** at/above `--min-salience` | Read stdout → act on the delta. |
-| `11` | First observation (baseline stored, nothing to diff) | Note baseline; emits a minimal envelope. |
-| `12` | Change **below** `--min-salience` (only with `--emit-subthreshold`) | Optional logging. |
-| `1`  | Usage / config error | Bug in invocation; don't retry. |
-| `2`  | Target not found | Fix config. |
-| `3`  | Fetch failed (DNS/TLS/timeout/5xx) — *soft* | Transient; retry with backoff. |
-| `4`  | Blocked by `robots.txt` | Don't retry without a policy change. |
-| `5`  | Auth failure (401/403) | Refresh credentials. |
-| `6`  | Rate-limited / crawl-delay not elapsed | Back off; read `crawl.retry_after` (stdout JSON + stderr). |
-| `7`  | Render required but no browser | Install Chromium or set `render="never"`. |
+```
+fetch → extract → normalize → segment → diff → salience → event
+```
 
-Codes `0`/`10`/`11` are frozen across all major versions.
+Get the page cheaply → keep the real content → strip per-load noise → cut into labeled blocks → compare against last time → score how much it matters → write the tiny event. The plain-English walkthrough (with this exact pricing example, end to end) is in **[HOW_IT_WORKS.md](HOW_IT_WORKS.md)**; the full specification is in [DESIGN.md](DESIGN.md).
 
-## Commands
+## Install
 
-| Command | Purpose |
-|---------|---------|
-| `cf init` | Scaffold `changefeed.toml` + `.changefeed/`. |
-| `cf watch <url>` | Register a target (appends to config). |
-| `cf check [targets…]` | Observe once: fetch → diff → emit event(s) + exit code. The agent primitive. |
-| `cf snapshot <target>` | Capture/seed a baseline without diffing. |
-| `cf diff <a.html> <b.html>` | Diff two local HTML files (no store). |
-| `cf feed [targets…]` | Paginated catch-up stream of recent change events (`--limit`, `--after-cursor`, `--since`, `--max-salience-first`). |
-| `cf ls` / `cf show <target>` | List targets / show one target's details. |
-| `cf rules` | Show/validate the resolved rule pack (warns on zero-match or selector drift). |
-| `cf schema` | Print the `changefeed/v1` JSON Schema. |
-| `cf explain <event_id>` | Replay the salience scoring for an event as a table. |
-| `cf score --dry-run <a> <b>` | Score an ad-hoc HTML pair without touching the store (the tuning loop). |
+Requires **Rust 1.80+**.
 
-Useful flags: `--format jsonl|json|pretty`, `--min-salience none|low|medium|high|critical`, `--no-store`/`--peek` (read-only probe that re-emits), `--archetype <pack>`.
+```bash
+cargo build --release            # binary at target/release/cf
+cargo install --path crates/cf   # or install onto your PATH
+```
 
-## Configuration
+## Configure
 
-`changefeed.toml` is config-as-code (reviewable in PRs). Secrets use `${ENV}` expansion and are never written to the store or logs.
+`changefeed.toml` is config-as-code (reviewable in PRs); secrets use `${ENV}` expansion and are never written to the store or logs.
 
 ```toml
 [defaults]
-schedule       = "15m"
-render         = "auto"          # auto | never | chromium
-timeout        = "30s"
-respect_robots = true
-min_salience   = "low"
+render       = "auto"
+min_salience = "low"
 
 [[target]]
-id        = "acme-pricing"       # stable handle → src.tid in events
+id        = "acme-pricing"        # stable handle → src.tid in events
 url       = "https://acme.com/pricing"
-archetype = "pricing"            # selects the salience rule pack + extract profile
-select    = [".PricingTable"]    # CSS selector(s) to scope extraction
-ignore    = [".cookie-banner", { attr = "data-csrf-nonce" }, { regex = '\d+ viewing right now' }]
-
-# [target.auth]                  # optional; ${ENV}-expanded, redacted from logs
-# header = { Authorization = "Bearer ${API_TOKEN}" }
+archetype = "pricing"             # picks a tuned rule pack + extract profile
+select    = [".PricingTable"]     # scope extraction with CSS selector(s)
+ignore    = [".cookie-banner", { regex = '\d+ viewing right now' }]
 ```
 
-## Rule packs
-
-A rule pack is pure declarative TOML (no code), resolved last-wins: **built-in default → archetype → per-target**. It tunes signal weights, materiality bands, regex/category rules, and the band→action map. MVP ships:
-
-- **`pricing`** — price/plan changes (twitchy bands; `plan removed → escalate`).
-- **`api-docs`** — breaking-change detection (e.g. a rate-limit drop → `open_ticket`).
-- **`status-page`** — incident detection (`investigating/outage → page_oncall`, sticky).
-
-## Architecture
-
-A two-crate workspace with a **compile-enforced purity wall**:
-
-- **`cf-core`** — the entire deterministic pipeline. Depends on no network/clock/disk crate, so impurity in a core stage is a *compile error*. Same input → byte-identical `sal`/`mat`/`act`/`conf` on any machine, offline.
-- **`cf`** — the impure boundary: `reqwest`+`rustls` Tier-1 fetch, `tokio`, `rusqlite`+`zstd` storage (one prior `CanonicalDoc` blob + raw HTML, keep-last-N ring), `clap` CLI, ULID/clock.
-
-See [`DESIGN.md`](DESIGN.md) for the full specification and [`ARCHITECTURE.md`](ARCHITECTURE.md) for the frozen type contract.
-
-## MVP scope
-
-**In:** Tier-1 HTTP (ETag/304, robots, `render=chromium` → exit 7), full §5.3 normalization, the three identities, the full diff (slot-anchor → LIS → similarity-fill → Myers, static ignore masking, idempotency dedup), 7 salience signals + noisy-OR + confidence, the three rule packs above, zstd-19 keep-last-N storage with `doc_hash`/304 zero-write short-circuits, the full CLI, and the §4.5 exit-code contract.
-
-**Phase 2 (not yet):** headless/Tier-2 render, the daemon + `cf feed --tail`, an MCP server, CAS/delta-chain storage, the `move`/`struct` cascade delta encodings, learned per-`slot_key` volatility, and the optional LLM adjudication tier.
+Three archetype packs ship — **pricing** (twitchy price moves), **status-page** (incidents → `page_oncall`), and **api-docs** (breaking changes → `open_ticket`). The full config and rule-pack reference is in [DESIGN.md](DESIGN.md).
 
 ## Development
 
 ```bash
 cargo build --release
-cargo test --workspace          # 264 tests
+cargo test --workspace                                  # 281 tests
 cargo clippy --workspace --all-targets -- -D warnings
-cargo bench -p cf-core          # diff/salience criterion benches
+cargo bench -p cf-core                                  # diff/salience benches
 ```
 
-The core is clock/RNG/network-free, so every stage is unit-testable with plain data; fetch tests use a local `wiremock` origin (never the real internet).
+The core is clock/RNG/network-free, so every stage is unit-testable with plain data; fetch tests use a local `wiremock` origin (never the real internet). The two-crate purity wall and the frozen type contract are documented in **[ARCHITECTURE.md](ARCHITECTURE.md)**.
+
+## Learn more
+
+- **[HOW_IT_WORKS.md](HOW_IT_WORKS.md)** — friendly, step-by-step walkthrough *(start here)*.
+- **[DESIGN.md](DESIGN.md)** — the full spec: commands, exit codes, config, diff, salience, storage, roadmap.
+- **[ARCHITECTURE.md](ARCHITECTURE.md)** — the frozen Rust type & API contract and the purity wall.
